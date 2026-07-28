@@ -28,36 +28,20 @@ if sys.platform == "win32":
     kernel32.SetConsoleMode(handle, mode.value | 0x0004)
 
 # ============= 常量定义 =============
-COLOR_RED = 0      # 红色面
-COLOR_ORANGE = 1   # 橙色面  
-COLOR_BLUE = 2     # 蓝色面
-COLOR_GREEN = 3    # 绿色面
-COLOR_WHITE = 4    # 白色面
-COLOR_YELLOW = 5   # 黄色面
-
-COLOR_NAMES = ["红色", "橙色", "蓝色", "绿色", "白色", "黄色"]
-# 颜色对应的汉字
-COLOR_CHARS = ["红", "橙", "蓝", "绿", "白", "黄"]
-
-# RGB颜色定义
-COLOR_RGB = [
-    (220, 60, 60),     # 红色
-    (220, 120, 0),     # 橙色
-    (60, 100, 220),    # 蓝色
-    (60, 220, 100),    # 绿色
-    (255, 255, 255),   # 白色
-    (220, 220, 60)     # 黄色
+# 颜色定义: (名称, 字符, RGB, 初始面对应面)
+_COLORS = [
+    ('红色', '红', (220, 60, 60),   'F'),
+    ('橙色', '橙', (220, 120, 0),   'B'),
+    ('蓝色', '蓝', (60, 100, 220),  'L'),
+    ('绿色', '绿', (60, 220, 100),  'R'),
+    ('白色', '白', (255, 255, 255), 'U'),
+    ('黄色', '黄', (220, 220, 60),  'D'),
 ]
 
-# 面到颜色的映射
-FACE_TO_COLOR = {
-    'F': COLOR_RED,     # 前面
-    'B': COLOR_ORANGE,  # 后面
-    'L': COLOR_BLUE,    # 左面
-    'R': COLOR_GREEN,   # 右面
-    'U': COLOR_WHITE,   # 上面
-    'D': COLOR_YELLOW,  # 下面
-}
+COLOR_NAMES = [c[0] for c in _COLORS]
+COLOR_CHARS = [c[1] for c in _COLORS]
+COLOR_RGB   = [c[2] for c in _COLORS]
+INITIAL_FACE_COLOR = {c[3]: i for i, c in enumerate(_COLORS)}
 
 # 面法向量（指向外部）
 FACE_NORMALS = {
@@ -241,16 +225,10 @@ class MouseController:
                 if pressed:
                     self.last_pos = (x, y)
                 self.mouse_queue.put(('middle_click', x, y, pressed))
-            elif button == mouse.Button.left and pressed:
-                self.mouse_queue.put(('left_click', x, y))
-        
-        def on_scroll(x, y, dx, dy):
-            self.mouse_queue.put(('scroll', x, y, dy))
-        
+
         self.listener = mouse.Listener(
             on_move=on_move,
             on_click=on_click,
-            on_scroll=on_scroll
         )
         self.listener.start()
     
@@ -290,28 +268,10 @@ class RubiksCubePiece:
         self._init_colors()
     
     def _init_colors(self):
-        """初始化面的颜色"""
         x, y, z = self.initial_position.x, self.initial_position.y, self.initial_position.z
-        
-        # 设置中心块颜色
-        if self.piece_type == 'center':
-            if x == -1:      self.initial_colors['L'] = COLOR_BLUE
-            elif x == 1:     self.initial_colors['R'] = COLOR_GREEN
-            elif y == -1:    self.initial_colors['D'] = COLOR_YELLOW
-            elif y == 1:     self.initial_colors['U'] = COLOR_WHITE
-            elif z == -1:    self.initial_colors['F'] = COLOR_RED
-            elif z == 1:     self.initial_colors['B'] = COLOR_ORANGE
-            return
-        
-        # 设置棱块和角块颜色
-        if x == -1:      self.initial_colors['L'] = COLOR_BLUE
-        elif x == 1:     self.initial_colors['R'] = COLOR_GREEN
-        
-        if y == -1:      self.initial_colors['D'] = COLOR_YELLOW
-        elif y == 1:     self.initial_colors['U'] = COLOR_WHITE
-        
-        if z == -1:      self.initial_colors['F'] = COLOR_RED
-        elif z == 1:     self.initial_colors['B'] = COLOR_ORANGE
+        for face, (nx, ny, nz) in FACE_NORMALS.items():
+            if (nx and x == nx) or (ny and y == ny) or (nz and z == nz):
+                self.initial_colors[face] = INITIAL_FACE_COLOR[face]
     
     def rotate(self, axis, angle):
         """旋转块 - 更新位置和局部旋转"""
@@ -345,8 +305,6 @@ class RubiksCubePiece:
         return corners
     
     def get_current_face_color(self, face_name):
-        """获取当前状态下指定方向的面颜色"""
-        # 获取指定方向的基础法向量
         return self.initial_colors.get(face_name)
     
     def reset(self):
@@ -365,14 +323,15 @@ class RubiksCubePiece:
 class RubiksCube:
     """魔方类"""
 
-    _FACE_POSITION_CHECK = {
-        'F': lambda pos: abs(pos.z + 1) < 0.1,
-        'B': lambda pos: abs(pos.z - 1) < 0.1,
-        'L': lambda pos: abs(pos.x + 1) < 0.1,
-        'R': lambda pos: abs(pos.x - 1) < 0.1,
-        'U': lambda pos: abs(pos.y - 1) < 0.1,
-        'D': lambda pos: abs(pos.y + 1) < 0.1,
-    }
+    @staticmethod
+    def _make_face_check(nx, ny, nz):
+        if nx: return lambda pos: abs(pos.x - nx) < 0.1
+        if ny: return lambda pos: abs(pos.y - ny) < 0.1
+        return lambda pos: abs(pos.z - nz) < 0.1
+
+    _FACE_POSITION_CHECK = {}
+    for f, n in FACE_NORMALS.items():
+        _FACE_POSITION_CHECK[f] = _make_face_check(*n)
 
     def __init__(self):
         self.pieces = []
@@ -388,26 +347,8 @@ class RubiksCube:
         self.camera_position = Vector3(0, 0, 0)  # 摄像机位置（原点）
         self.focal_length = 8.0  # 焦距，控制透视强度
         
-        # 动画状态
-        self.animating = False
-        self.animation_progress = 0.0
-        self.current_animation = None  # (axis, face_char, clockwise)
-        self.animation_start_time = 0
-        self.animation_pieces = []     # 当前动画中要旋转的块
-        self.animation_rotation = None # 当前动画的旋转四元数
-        
-        # 颜色转换器
-        self.color_converter = ColorConverter()
-        
-        # 当前视角下的方位映射
-        self.view_mapping = {
-            'F': 'F',  # 前面（红色）
-            'B': 'B',  # 后面（橙色）
-            'L': 'L',  # 左面（蓝色）
-            'R': 'R',  # 右面（绿色）
-            'U': 'U',  # 上面（白色）
-            'D': 'D'   # 下面（黄色）
-        }
+        self._clear_animation()
+        self.view_mapping = {k: k for k in FACE_NORMALS}
         
         # 创建魔方块
         self._create_pieces()
@@ -422,50 +363,36 @@ class RubiksCube:
                 for z in (-1, 1):
                     self.pieces.append(RubiksCubePiece(Vector3(x, y, z), 'corner'))
         
-        # 创建棱块（12个）
-        for y in (-1, 1):
-            for z in (-1, 1):
-                self.pieces.append(RubiksCubePiece(Vector3(0, y, z), 'edge'))
+        for a in (-1, 1):
+            for b in (-1, 1):
+                self.pieces.append(RubiksCubePiece(Vector3(0, a, b), 'edge'))
+                self.pieces.append(RubiksCubePiece(Vector3(a, 0, b), 'edge'))
+                self.pieces.append(RubiksCubePiece(Vector3(a, b, 0), 'edge'))
         
-        for x in (-1, 1):
-            for z in (-1, 1):
-                self.pieces.append(RubiksCubePiece(Vector3(x, 0, z), 'edge'))
-        
-        for x in (-1, 1):
-            for y in (-1, 1):
-                self.pieces.append(RubiksCubePiece(Vector3(x, y, 0), 'edge'))
-        
-        # 创建中心块（6个）
-        center_positions = [
-            Vector3(-1, 0, 0),  # 蓝色面中心
-            Vector3(1, 0, 0),   # 绿色面中心
-            Vector3(0, -1, 0),  # 黄色面中心
-            Vector3(0, 1, 0),   # 白色面中心
-            Vector3(0, 0, -1),  # 橙色面中心
-            Vector3(0, 0, 1)    # 红色面中心
-        ]
-        
-        for position in center_positions:
-            self.pieces.append(RubiksCubePiece(position, 'center'))
+        for nx, ny, nz in FACE_NORMALS.values():
+            self.pieces.append(RubiksCubePiece(Vector3(nx, ny, nz), 'center'))
     
     def update_view_mapping(self):
-        """更新当前视角下的方位映射"""
+        """更新当前视角下的方位映射（贪心一一匹配）"""
         inv_rotation = self.rotation.conjugate()
-        for view_dir_name, normal_vec in FACE_NORMALS.items():
+
+        pairs = []
+        for view_name, normal_vec in FACE_NORMALS.items():
             view_dir = Vector3(*normal_vec)
-            dir_in_cube_space = inv_rotation.rotate_vector(view_dir)
-
-            best_face = None
-            best_dot = -1
+            dir_in_cube = inv_rotation.rotate_vector(view_dir)
             for face_name, face_normal_vec in FACE_NORMALS.items():
-                face_normal = Vector3(*face_normal_vec)
-                dot = dir_in_cube_space.dot(face_normal)
-                if dot > best_dot:
-                    best_dot = dot
-                    best_face = face_name
+                dot = dir_in_cube.dot(Vector3(*face_normal_vec))
+                pairs.append((dot, view_name, face_name))
 
-            if best_face and best_dot > 0.5:
-                self.view_mapping[view_dir_name] = best_face
+        pairs.sort(key=lambda x: x[0], reverse=True)
+
+        used_views = set()
+        used_faces = set()
+        for dot, view_name, face_name in pairs:
+            if view_name not in used_views and face_name not in used_faces and dot > 0.5:
+                self.view_mapping[view_name] = face_name
+                used_views.add(view_name)
+                used_faces.add(face_name)
     
     def rotate_by_mouse_delta(self, dx, dy):
         """通过鼠标旋转整个魔方"""
@@ -499,8 +426,19 @@ class RubiksCube:
         self.current_animation = (axis, actual_face, clockwise)
         self.animation_pieces = self._get_pieces_on_face(actual_face)
         self.animation_rotation = Quaternion.from_axis_angle(axis, 
-            ROTATION_ANGLE if clockwise else -ROTATION_ANGLE)
+            self._anim_angle(clockwise))
     
+    def _anim_angle(self, clockwise):
+        return ROTATION_ANGLE if clockwise else -ROTATION_ANGLE
+
+    def _clear_animation(self):
+        self.animating = False
+        self.animation_progress = 0.0
+        self.current_animation = None
+        self.animation_start_time = 0
+        self.animation_pieces = []
+        self.animation_rotation = None
+
     def update_animation(self):
         """更新动画"""
         if not self.animating:
@@ -517,15 +455,11 @@ class RubiksCube:
         if self.current_animation and self.animation_pieces:
             axis, actual_face, clockwise = self.current_animation
             
-            angle = ROTATION_ANGLE if clockwise else -ROTATION_ANGLE
+            angle = self._anim_angle(clockwise)
             for piece in self.animation_pieces:
                 piece.rotate(axis, angle)
             
-            self.animating = False
-            self.animation_progress = 0.0
-            self.current_animation = None
-            self.animation_pieces = []
-            self.animation_rotation = None
+            self._clear_animation()
     
     def _get_pieces_on_face(self, face_char):
         """获取指定面上的所有块"""
@@ -538,28 +472,13 @@ class RubiksCube:
         """获取块的当前位置（考虑动画）"""
         if self.animating and piece in self.animation_pieces:
             axis, _, clockwise = self.current_animation
-            partial_angle = (ROTATION_ANGLE if clockwise else -ROTATION_ANGLE) * self.animation_progress
+            partial_angle = self._anim_angle(clockwise) * self.animation_progress
             partial_rotation = Quaternion.from_axis_angle(axis, partial_angle)
             return partial_rotation.rotate_vector(piece.current_position)
         
         return piece.current_position
     
     def get_piece_face_color(self, piece, face_name):
-        """获取块的面颜色（考虑动画）"""
-        if self.animating and piece in self.animation_pieces:
-            axis, _, clockwise = self.current_animation
-            partial_angle = (ROTATION_ANGLE if clockwise else -ROTATION_ANGLE) * self.animation_progress
-            partial_rotation = Quaternion.from_axis_angle(axis, partial_angle)
-            
-            combined_rotation = partial_rotation.multiply(piece.local_rotation)
-            
-            original_rotation = piece.local_rotation
-            piece.local_rotation = combined_rotation
-            color = piece.get_current_face_color(face_name)
-            piece.local_rotation = original_rotation
-            
-            return color
-        
         return piece.get_current_face_color(face_name)
     
     def get_piece_face_corners(self, piece, face_name):
@@ -568,7 +487,7 @@ class RubiksCube:
         
         if self.animating and piece in self.animation_pieces:
             axis, _, clockwise = self.current_animation
-            partial_angle = (ROTATION_ANGLE if clockwise else -ROTATION_ANGLE) * self.animation_progress
+            partial_angle = self._anim_angle(clockwise) * self.animation_progress
             partial_rotation = Quaternion.from_axis_angle(axis, partial_angle)
             corners = [partial_rotation.rotate_vector(c) for c in corners]
         
@@ -651,23 +570,14 @@ class RubiksCube:
         """找到当前正面(F)和上方向(U)的交线棱块"""
         front_face = self.view_mapping.get('F')
         top_face = self.view_mapping.get('U')
-        
-        if not front_face or not top_face:
-            return None
-        
         is_on_front = self._FACE_POSITION_CHECK.get(front_face)
         is_on_top = self._FACE_POSITION_CHECK.get(top_face)
-        
         if not is_on_front or not is_on_top:
             return None
-        
-        for piece in self.pieces:
-            if piece.piece_type == 'edge':
-                current_pos = self.get_piece_position(piece)
-                if is_on_front(current_pos) and is_on_top(current_pos):
-                    return piece
-        
-        return None
+        return next((p for p in self.pieces
+                     if p.piece_type == 'edge'
+                     and is_on_front(self.get_piece_position(p))
+                     and is_on_top(self.get_piece_position(p))), None)
     
     def _draw_direction_marker(self, stdscr, width, height):
         """绘制正面上方棱块的方向标记"""
@@ -722,10 +632,10 @@ class RubiksCube:
                     continue
                 
                 brightness = self.calculate_brightness(normal_rotated)
-                face_color_rgb = self.color_converter.apply_brightness(
+                face_color_rgb = ColorConverter.apply_brightness(
                     COLOR_RGB[color_idx], brightness)
-                
-                color_index = self.color_converter.rgb_to_256color(*face_color_rgb)
+
+                color_index = ColorConverter.rgb_to_256color(*face_color_rgb)
                 
                 if color_index not in color_cache:
                     pair_number = len(color_cache) + 1
@@ -768,15 +678,7 @@ class RubiksCube:
             except:
                 pass
             
-        self.update_view_mapping()
-        
-        current_F = self.view_mapping.get('F', 'F')
-        current_B = self.view_mapping.get('B', 'B')
-        current_L = self.view_mapping.get('L', 'L')
-        current_R = self.view_mapping.get('R', 'R')
-        current_U = self.view_mapping.get('U', 'U')
-        current_D = self.view_mapping.get('D', 'D')
-        
+        cmap = self.view_mapping
         controls = [
             "控制说明:",
             "  鼠标中键拖动 - 旋转魔方整体",
@@ -787,20 +689,12 @@ class RubiksCube:
             "  ↑ 标记      - 指示当前正面的上方方向",
             "",
             "旋转各个方位面:",
-            f"E-前面顺时针 Shift+E-前面逆时针",
-            f"Q-后面顺时针 Shift+Q-后面逆时针",
-            f"A-左面顺时针 Shift+A-左面逆时针",
-            f"D-右面顺时针 Shift+D-右面逆时针",
-            f"W-上面顺时针 Shift+W-上面逆时针",
-            f"S-下面顺时针 Shift+S-下面逆时针",
+            *(f"{k.upper()}-{_FACE_NAMES[f]}顺时针  Shift+{k.upper()}-{_FACE_NAMES[f]}逆时针"
+              for k, f in _FACE_KEYS),
             "",
             "当前视角映射:",
-            f"  前面(F) -> {COLOR_NAMES[FACE_TO_COLOR.get(current_F, 0)]}面",
-            f"  后面(B) -> {COLOR_NAMES[FACE_TO_COLOR.get(current_B, 1)]}面",
-            f"  左面(L) -> {COLOR_NAMES[FACE_TO_COLOR.get(current_L, 2)]}面",
-            f"  右面(R) -> {COLOR_NAMES[FACE_TO_COLOR.get(current_R, 3)]}面",
-            f"  上面(U) -> {COLOR_NAMES[FACE_TO_COLOR.get(current_U, 4)]}面",
-            f"  下面(D) -> {COLOR_NAMES[FACE_TO_COLOR.get(current_D, 5)]}面",
+            *(f"  {_FACE_NAMES[f]}({f}) -> {COLOR_NAMES[INITIAL_FACE_COLOR[cmap.get(f, f)]]}面"
+              for f in _FACE_NAMES),
         ]
         
         status = [
@@ -855,20 +749,8 @@ class RubiksCube:
         self.rotation = Quaternion(1, 0, 0, 0)
         self.scale = 25.0
         self.position = Vector3(0, 0, 10)
-        self.animating = False
-        self.animation_progress = 0.0
-        self.current_animation = None
-        self.animation_pieces = []
-        self.animation_rotation = None
-        
-        self.view_mapping = {
-            'F': 'F',
-            'B': 'B',
-            'L': 'L',
-            'R': 'R',
-            'U': 'U',
-            'D': 'D'
-        }
+        self._clear_animation()
+        self.view_mapping = {k: k for k in FACE_NORMALS}
     
     def scramble(self, moves=20):
         """打乱魔方"""
@@ -885,12 +767,20 @@ class RubiksCube:
 
             pieces_to_rotate = self._get_pieces_on_face(actual_face)
             axis = Vector3(*FACE_NORMALS[actual_face])
-            angle = ROTATION_ANGLE if clockwise else -ROTATION_ANGLE
+            angle = self._anim_angle(clockwise)
 
             for piece in pieces_to_rotate:
                 piece.rotate(axis, angle)
 
 # ============= 主程序 =============
+_FACE_NAMES = {'F': '前面', 'B': '后面', 'L': '左面', 'R': '右面', 'U': '上面', 'D': '下面'}
+_FACE_KEYS = [('e', 'F'), ('q', 'B'), ('a', 'L'), ('d', 'R'), ('w', 'U'), ('s', 'D')]
+
+_KEY_ACTIONS = {}
+for _key, _face in _FACE_KEYS:
+    _KEY_ACTIONS[ord(_key)] = (_face, True)
+    _KEY_ACTIONS[ord(_key.upper())] = (_face, False)
+
 def main(stdscr):
     """主函数"""
     curses.curs_set(0)
@@ -964,30 +854,9 @@ def main(stdscr):
                     cube.reset()
                 elif key in (ord('x'), ord('X')):
                     cube.scramble(16)
-                elif key == ord('e'):
-                    cube.rotate_view_direction('F', clockwise=True)
-                elif key == ord('E'):
-                    cube.rotate_view_direction('F', clockwise=False)
-                elif key == ord('q'):
-                    cube.rotate_view_direction('B', clockwise=True)
-                elif key == ord('Q'):
-                    cube.rotate_view_direction('B', clockwise=False)
-                elif key == ord('a'):
-                    cube.rotate_view_direction('L', clockwise=True)
-                elif key == ord('A'):
-                    cube.rotate_view_direction('L', clockwise=False)
-                elif key == ord('d'):
-                    cube.rotate_view_direction('R', clockwise=True)
-                elif key == ord('D'):
-                    cube.rotate_view_direction('R', clockwise=False)
-                elif key == ord('w'):
-                    cube.rotate_view_direction('U', clockwise=True)
-                elif key == ord('W'):
-                    cube.rotate_view_direction('U', clockwise=False)
-                elif key == ord('s'):
-                    cube.rotate_view_direction('D', clockwise=True)
-                elif key == ord('S'):
-                    cube.rotate_view_direction('D', clockwise=False)
+                elif key in _KEY_ACTIONS:
+                    face, cw = _KEY_ACTIONS[key]
+                    cube.rotate_view_direction(face, clockwise=cw)
             except:
                 pass
             
@@ -1027,12 +896,8 @@ def start_program():
     print("  • X 键        - 打乱魔方")
     print("  • ESC 键      - 退出程序")
     print("\n旋转各个方位面（基于当前视角）：")
-    print("  E - 前面顺时针   Shift+E - 前面逆时针")
-    print("  Q - 后面顺时针   Shift+Q - 后面逆时针")
-    print("  A - 左面顺时针   Shift+A - 左面逆时针")
-    print("  D - 右面顺时针   Shift+D - 右面逆时针")
-    print("  W - 上面顺时针   Shift+W - 上面逆时针")
-    print("  S - 下面顺时针   Shift+S - 下面逆时针")
+    for k, f in _FACE_KEYS:
+        print(f"  {k.upper()} - {_FACE_NAMES[f]}顺时针   Shift+{k.upper()} - {_FACE_NAMES[f]}逆时针")
     print("\n视角映射：")
     print("  • 旋转魔方后，UI会显示当前每个方位对应的实际颜色面")
     print("  • 例如：旋转魔方后，F可能对应蓝色面，这时按F键会旋转蓝色面")
