@@ -7,7 +7,7 @@ import curses
 import math
 import time
 import sys
-import os
+import ctypes
 import queue
 import random
 from pynput import mouse
@@ -21,7 +21,11 @@ def set_console_fullscreen():
 
 # Windows下启用ANSI转义序列支持
 if sys.platform == "win32":
-    os.system("")
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.GetStdHandle(-11)
+    mode = ctypes.c_uint32()
+    kernel32.GetConsoleMode(handle, ctypes.byref(mode))
+    kernel32.SetConsoleMode(handle, mode.value | 0x0004)
 
 # ============= 常量定义 =============
 COLOR_RED = 0      # 红色面
@@ -47,26 +51,16 @@ COLOR_RGB = [
 
 # 面到颜色的映射
 FACE_TO_COLOR = {
-    'F': COLOR_ORANGE,  # 前面
-    'B': COLOR_RED, # 后面
-    'L': COLOR_BLUE,   # 左面
-    'R': COLOR_GREEN,  # 右面
-    'U': COLOR_WHITE,  # 上面
-    'D': COLOR_YELLOW  # 下面
+    'F': COLOR_RED,     # 前面
+    'B': COLOR_ORANGE,  # 后面
+    'L': COLOR_BLUE,    # 左面
+    'R': COLOR_GREEN,   # 右面
+    'U': COLOR_WHITE,   # 上面
+    'D': COLOR_YELLOW,  # 下面
 }
 
 # 面法向量（指向外部）
 FACE_NORMALS = {
-    'F': (0, 0, -1),    # 前面
-    'B': (0, 0, 1),   # 后面
-    'L': (-1, 0, 0),   # 左面
-    'R': (1, 0, 0),    # 右面
-    'U': (0, 1, 0),    # 上面
-    'D': (0, -1, 0)    # 下面
-}
-
-# 旋转轴映射（基于魔方坐标系）
-ROTATION_AXES = {
     'F': (0, 0, -1),    # 前面
     'B': (0, 0, 1),   # 后面
     'L': (-1, 0, 0),   # 左面
@@ -118,9 +112,6 @@ class Vector3:
     
     def __rmul__(self, scalar):
         return self.__mul__(scalar)
-    
-    def __neg__(self):
-        return Vector3(-self.x, -self.y, -self.z)
     
     def __eq__(self, other):
         if not isinstance(other, Vector3):
@@ -308,8 +299,8 @@ class RubiksCubePiece:
             elif x == 1:     self.initial_colors['R'] = COLOR_GREEN
             elif y == -1:    self.initial_colors['D'] = COLOR_YELLOW
             elif y == 1:     self.initial_colors['U'] = COLOR_WHITE
-            elif z == -1:    self.initial_colors['B'] = COLOR_ORANGE
-            elif z == 1:     self.initial_colors['F'] = COLOR_RED
+            elif z == -1:    self.initial_colors['F'] = COLOR_RED
+            elif z == 1:     self.initial_colors['B'] = COLOR_ORANGE
             return
         
         # 设置棱块和角块颜色
@@ -319,8 +310,8 @@ class RubiksCubePiece:
         if y == -1:      self.initial_colors['D'] = COLOR_YELLOW
         elif y == 1:     self.initial_colors['U'] = COLOR_WHITE
         
-        if z == -1:      self.initial_colors['B'] = COLOR_ORANGE
-        elif z == 1:     self.initial_colors['F'] = COLOR_RED
+        if z == -1:      self.initial_colors['F'] = COLOR_RED
+        elif z == 1:     self.initial_colors['B'] = COLOR_ORANGE
     
     def rotate(self, axis, angle):
         """旋转块 - 更新位置和局部旋转"""
@@ -333,8 +324,8 @@ class RubiksCubePiece:
         # 面的角点定义（相对于块中心，大小为1）
         # 注意：顶点顺序需要是逆时针，以确保法向量指向外部
         face_corners = {
-            'F': [(-0.5, -0.5, 0.5), (0.5, -0.5, 0.5), (0.5, 0.5, 0.5), (-0.5, 0.5, 0.5)],
-            'B': [(-0.5, -0.5, -0.5), (-0.5, 0.5, -0.5), (0.5, 0.5, -0.5), (0.5, -0.5, -0.5)],
+            'F': [(-0.5, -0.5, -0.5), (-0.5, 0.5, -0.5), (0.5, 0.5, -0.5), (0.5, -0.5, -0.5)],
+            'B': [(-0.5, -0.5, 0.5), (0.5, -0.5, 0.5), (0.5, 0.5, 0.5), (-0.5, 0.5, 0.5)],
             'L': [(-0.5, -0.5, -0.5), (-0.5, -0.5, 0.5), (-0.5, 0.5, 0.5), (-0.5, 0.5, -0.5)],
             'R': [(0.5, -0.5, 0.5), (0.5, -0.5, -0.5), (0.5, 0.5, -0.5), (0.5, 0.5, 0.5)],
             'U': [(-0.5, 0.5, 0.5), (0.5, 0.5, 0.5), (0.5, 0.5, -0.5), (-0.5, 0.5, -0.5)],
@@ -356,32 +347,7 @@ class RubiksCubePiece:
     def get_current_face_color(self, face_name):
         """获取当前状态下指定方向的面颜色"""
         # 获取指定方向的基础法向量
-        if face_name not in FACE_NORMALS:
-            return None
-        
-        # 创建法向量
-        target_normal = Vector3(*FACE_NORMALS[face_name])
-        
-        # 计算逆旋转（将目标方向转换到初始坐标系）
-        inv_rotation = Quaternion()
-        
-        # 将目标法向量转换到块的初始坐标系
-        initial_normal = inv_rotation.rotate_vector(target_normal)
-        
-        # 找出哪个初始面的法向量最接近这个方向
-        best_match = None
-        best_dot = -1
-        
-        for init_face, init_color in self.initial_colors.items():
-            if init_face in FACE_NORMALS:
-                init_normal = Vector3(*FACE_NORMALS[init_face])
-                dot = initial_normal.dot(init_normal)
-                if dot > best_dot:
-                    best_dot = dot
-                    best_match = init_face
-        
-        # 返回匹配的面的颜色
-        return self.initial_colors.get(best_match) if best_match and best_dot > 0.9 else None
+        return self.initial_colors.get(face_name)
     
     def reset(self):
         """重置块到初始状态"""
@@ -398,6 +364,16 @@ class RubiksCubePiece:
 # ============= 魔方类 =============
 class RubiksCube:
     """魔方类"""
+
+    _FACE_POSITION_CHECK = {
+        'F': lambda pos: abs(pos.z + 1) < 0.1,
+        'B': lambda pos: abs(pos.z - 1) < 0.1,
+        'L': lambda pos: abs(pos.x + 1) < 0.1,
+        'R': lambda pos: abs(pos.x - 1) < 0.1,
+        'U': lambda pos: abs(pos.y - 1) < 0.1,
+        'D': lambda pos: abs(pos.y + 1) < 0.1,
+    }
+
     def __init__(self):
         self.pieces = []
         self.rotation = Quaternion(1, 0, 0, 0)  # 整体旋转
@@ -431,16 +407,6 @@ class RubiksCube:
             'R': 'R',  # 右面（绿色）
             'U': 'U',  # 上面（白色）
             'D': 'D'   # 下面（黄色）
-        }
-        
-        # 视角方向向量（在摄像机坐标系中）
-        self.view_directions = {
-            'F': Vector3(0, 0, -1),    # 前面（朝向屏幕外）
-            'B': Vector3(0, 0, 1),   # 后面（朝向屏幕内）
-            'L': Vector3(-1, 0, 0),   # 左面（屏幕左边）
-            'R': Vector3(1, 0, 0),    # 右面（屏幕右边）
-            'U': Vector3(0, 1, 0),    # 上面（屏幕上方）
-            'D': Vector3(0, -1, 0)    # 下面（屏幕下方）
         }
         
         # 创建魔方块
@@ -484,20 +450,20 @@ class RubiksCube:
     
     def update_view_mapping(self):
         """更新当前视角下的方位映射"""
-        for view_dir_name, view_dir in self.view_directions.items():
+        inv_rotation = self.rotation.conjugate()
+        for view_dir_name, normal_vec in FACE_NORMALS.items():
+            view_dir = Vector3(*normal_vec)
+            dir_in_cube_space = inv_rotation.rotate_vector(view_dir)
+
             best_face = None
             best_dot = -1
-            
-            inv_rotation = Quaternion(self.rotation.w, -self.rotation.x, -self.rotation.y, -self.rotation.z)
-            dir_in_cube_space = inv_rotation.rotate_vector(view_dir)
-            
             for face_name, face_normal_vec in FACE_NORMALS.items():
                 face_normal = Vector3(*face_normal_vec)
                 dot = dir_in_cube_space.dot(face_normal)
                 if dot > best_dot:
                     best_dot = dot
                     best_face = face_name
-            
+
             if best_face and best_dot > 0.5:
                 self.view_mapping[view_dir_name] = best_face
     
@@ -507,11 +473,10 @@ class RubiksCube:
         if dx != 0:
             rot_y = Quaternion.from_axis_angle(Vector3(0, 1, 0), -dx * rotate_speed)
             self.rotation = rot_y.multiply(self.rotation).normalize()
-            self.update_view_mapping()
-        
         if dy != 0:
             rot_x = Quaternion.from_axis_angle(Vector3(1, 0, 0), -dy * rotate_speed)
             self.rotation = rot_x.multiply(self.rotation).normalize()
+        if dx != 0 or dy != 0:
             self.update_view_mapping()
     
     def zoom_by_mouse(self, dy):
@@ -530,7 +495,7 @@ class RubiksCube:
         self.animation_progress = 0.0
         self.animation_start_time = time.time()
         
-        axis = Vector3(*ROTATION_AXES[actual_face])
+        axis = Vector3(*FACE_NORMALS[actual_face]) * -1
         self.current_animation = (axis, actual_face, clockwise)
         self.animation_pieces = self._get_pieces_on_face(actual_face)
         self.animation_rotation = Quaternion.from_axis_angle(axis, 
@@ -564,19 +529,10 @@ class RubiksCube:
     
     def _get_pieces_on_face(self, face_char):
         """获取指定面上的所有块"""
-        position_check = {
-            'F': lambda pos: abs(pos.z + 1) < 0.1,
-            'B': lambda pos: abs(pos.z - 1) < 0.1,
-            'L': lambda pos: abs(pos.x + 1) < 0.1,
-            'R': lambda pos: abs(pos.x - 1) < 0.1,
-            'U': lambda pos: abs(pos.y - 1) < 0.1,
-            'D': lambda pos: abs(pos.y + 1) < 0.1
-        }
-        
-        if face_char not in position_check:
+        check = self._FACE_POSITION_CHECK.get(face_char)
+        if not check:
             return []
-        
-        return [p for p in self.pieces if position_check[face_char](p.current_position)]
+        return [p for p in self.pieces if check(p.current_position)]
     
     def get_piece_position(self, piece):
         """获取块的当前位置（考虑动画）"""
@@ -699,17 +655,8 @@ class RubiksCube:
         if not front_face or not top_face:
             return None
         
-        face_position_check = {
-            'F': lambda pos: abs(pos.z + 1) < 0.1,
-            'B': lambda pos: abs(pos.z - 1) < 0.1,
-            'L': lambda pos: abs(pos.x + 1) < 0.1,
-            'R': lambda pos: abs(pos.x - 1) < 0.1,
-            'U': lambda pos: abs(pos.y - 1) < 0.1,
-            'D': lambda pos: abs(pos.y + 1) < 0.1
-        }
-        
-        is_on_front = face_position_check.get(front_face)
-        is_on_top = face_position_check.get(top_face)
+        is_on_front = self._FACE_POSITION_CHECK.get(front_face)
+        is_on_top = self._FACE_POSITION_CHECK.get(top_face)
         
         if not is_on_front or not is_on_top:
             return None
@@ -925,28 +872,23 @@ class RubiksCube:
     
     def scramble(self, moves=20):
         """打乱魔方"""
+        self._complete_animation()
+
         view_directions = ['F', 'B', 'L', 'R', 'U', 'D']
-        
         for _ in range(moves):
             view_direction = random.choice(view_directions)
             clockwise = random.choice([True, False])
-            
+
             actual_face = self.view_mapping.get(view_direction)
             if not actual_face:
                 continue
-            
+
             pieces_to_rotate = self._get_pieces_on_face(actual_face)
-            axis = Vector3(*ROTATION_AXES[actual_face])
+            axis = Vector3(*FACE_NORMALS[actual_face])
             angle = ROTATION_ANGLE if clockwise else -ROTATION_ANGLE
-            
+
             for piece in pieces_to_rotate:
                 piece.rotate(axis, angle)
-        
-        self.animating = False
-        self.animation_progress = 0.0
-        self.current_animation = None
-        self.animation_pieces = []
-        self.animation_rotation = None
 
 # ============= 主程序 =============
 def main(stdscr):
@@ -962,7 +904,8 @@ def main(stdscr):
     
     curses.start_color()
     curses.use_default_colors()
-    
+    curses.mousemask(curses.ALL_MOUSE_EVENTS)
+
     color_cache = {}
     cube = RubiksCube()
     mouse_controller = MouseController()
@@ -1003,15 +946,19 @@ def main(stdscr):
                                 cube.rotate_by_mouse_delta(dx, dy)
                                 mouse_controller.last_pos = (x, y)
                 
-                elif event_type == 'scroll':
-                    if len(event) >= 4:
-                        _, x, y, dy = event
-                        cube.zoom_by_mouse(dy)
-            
             try:
                 key = stdscr.getch()
                 
-                if key == 27:
+                if key == curses.KEY_MOUSE:
+                    try:
+                        _, _, _, _, bstate = curses.getmouse()
+                        if bstate & curses.BUTTON4_PRESSED:
+                            cube.zoom_by_mouse(1)
+                        elif bstate & curses.BUTTON5_PRESSED:
+                            cube.zoom_by_mouse(-1)
+                    except:
+                        pass
+                elif key == 27:
                     break
                 elif key in (ord('c'), ord('C')):
                     cube.reset()
