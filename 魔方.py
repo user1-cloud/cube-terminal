@@ -30,12 +30,12 @@ if sys.platform == "win32":
 # ============= 常量定义 =============
 # 颜色定义: (名称, 字符, RGB, 初始面对应面)
 _COLORS = [
-    ('红色', '红', (220, 60, 60),   'F'),
-    ('橙色', '橙', (220, 120, 0),   'B'),
-    ('蓝色', '蓝', (60, 100, 220),  'L'),
-    ('绿色', '绿', (60, 220, 100),  'R'),
-    ('白色', '白', (255, 255, 255), 'U'),
-    ('黄色', '黄', (220, 220, 60),  'D'),
+    ('红色', '█', (255, 40, 40),   'F'),
+    ('橙色', '█', (255, 140, 0),   'B'),
+    ('蓝色', '█', (60, 100, 255),   'L'),
+    ('绿色', '█', (70, 255, 70),   'R'),
+    ('白色', '█', (255, 255, 255), 'U'),
+    ('黄色', '█', (255, 255, 0),   'D'),
 ]
 
 COLOR_NAMES = [c[0] for c in _COLORS]
@@ -164,14 +164,14 @@ class Quaternion:
 # ============= 颜色工具类 =============
 class ColorConverter:
     """颜色转换工具类"""
-    
+
     @staticmethod
     def rgb_to_256color(r, g, b):
         """将RGB值转换为256色模式中的颜色索引"""
         r = max(0, min(255, r))
         g = max(0, min(255, g))
         b = max(0, min(255, b))
-        
+
         # 灰度处理
         if r == g == b:
             if r < 8:
@@ -181,23 +181,38 @@ class ColorConverter:
             else:
                 gray_index = int((r - 8) / 247 * 23)
                 return 232 + gray_index
-        
+
         # 彩色处理
         r_idx = int(r / 255 * 5)
         g_idx = int(g / 255 * 5)
         b_idx = int(b / 255 * 5)
         return 16 + 36 * r_idx + 6 * g_idx + b_idx
-    
+
+    @staticmethod
+    def rgb_from_256color(ci):
+        """从256色索引反查RGB（用于抖动误差计算）"""
+        if 16 <= ci <= 231:
+            ci -= 16
+            r = (ci // 36) * 51
+            g = ((ci % 36) // 6) * 51
+            b = (ci % 6) * 51
+            return (r, g, b)
+        elif 232 <= ci <= 255:
+            gray = 8 + (ci - 232) * 247 // 23
+            return (gray, gray, gray)
+        else:
+            return (0, 0, 0)
+
     @staticmethod
     def apply_brightness(rgb, brightness):
         """应用亮度因子到RGB颜色"""
         r, g, b = rgb
         brightness = max(0.1, min(1.5, brightness))
-        
+
         r = int(r * brightness)
         g = int(g * brightness)
         b = int(b * brightness)
-        
+
         return (
             max(0, min(255, r)),
             max(0, min(255, g)),
@@ -494,17 +509,30 @@ class RubiksCube:
         piece_pos = self.get_piece_position(piece)
         return [c + piece_pos for c in corners]
     
-    def calculate_brightness(self, normal):
-        """计算面的亮度因子"""
-        dot = normal.dot(self.light_dir)
-        ambient = 0.3
-        diffuse = max(0, dot) * 0.7
+    def calculate_brightness(self, normal, view_dir=None):
+        """Blinn-Phong光照 + 边缘光"""
+        n_dot_l = normal.dot(self.light_dir)
+
+        # 环境光
+        ambient = 0.25
+
+        # 漫反射 (Lambertian)
+        diffuse = max(0, n_dot_l) * 0.7
+
         brightness = ambient + diffuse
-        
-        if dot > 0.8:
-            brightness = min(1.2, brightness + 0.2)
-        
-        return max(0.25, min(1.2, brightness))
+
+        # 镜面高光 (Blinn-Phong)
+        if view_dir is not None:
+            half = (self.light_dir + view_dir).normalized()
+            spec = max(0, normal.dot(half))
+            brightness += pow(spec, 48) * 0.4
+
+        # 边缘光 (rim lighting)
+        if view_dir is not None:
+            rim = 1.0 - max(0, normal.dot(view_dir))
+            brightness += rim * rim * 0.1
+
+        return max(0.15, min(1.5, brightness))
     
     def project_point(self, point, width, height):
         """将3D点投影到2D屏幕"""
@@ -524,47 +552,68 @@ class RubiksCube:
         
         return screen_x, screen_y, relative_point.length
     
-    def draw_polygon(self, stdscr, points, color_pair, color_char):
-        """绘制填充多边形"""
-        if len(points) < 3:
+    def _rasterize(self, zbuf, screen_pts, color_idx, corner_brightness,
+                   corner_depths, color_cache, color_char):
+        """扫描线栅格化+着色 — 插值亮度、算颜色、写z-buffer"""
+        if len(screen_pts) < 3:
             return
-        
-        y_coords = [p[1] for p in points]
-        y_min, y_max = int(min(y_coords)), int(max(y_coords))
-        
+        base_rgb = COLOR_RGB[color_idx]
+        y_coords = [p[1] for p in screen_pts]
+        y_min = int(math.floor(min(y_coords)))
+        y_max = int(math.ceil(max(y_coords))) - 1
+        n = len(screen_pts)
+
         edges = []
-        n = len(points)
         for i in range(n):
-            x1, y1 = points[i]
-            x2, y2 = points[(i + 1) % n]
+            x1, y1 = screen_pts[i]
+            x2, y2 = screen_pts[(i + 1) % n]
+            d1, d2 = corner_depths[i], corner_depths[(i + 1) % n]
+            b1, b2 = corner_brightness[i], corner_brightness[(i + 1) % n]
             if y1 != y2:
                 if y1 > y2:
                     x1, x2 = x2, x1
                     y1, y2 = y2, y1
-                inv_slope = (x2 - x1) / (y2 - y1) if y2 != y1 else 0
-                edges.append((y1, y2, x1, inv_slope))
-        
+                    d1, d2 = d2, d1
+                    b1, b2 = b2, b1
+                dy = y2 - y1
+                edges.append((y1, y2,
+                              x1, (x2 - x1) / dy,
+                              d1, (d2 - d1) / dy,
+                              b1, (b2 - b1) / dy))
+
         for y in range(y_min, y_max + 1):
-            intersections = []
-            for y1, y2, x1, inv_slope in edges:
-                if y1 <= y < y2:
-                    x = x1 + inv_slope * (y - y1)
-                    intersections.append(x)
-            
-            if len(intersections) >= 2:
-                intersections.sort()
-                for i in range(0, len(intersections), 2):
-                    if i + 1 < len(intersections):
-                        start_x = max(0, int(intersections[i]))
-                        end_x = min(stdscr.getmaxyx()[1] - 1, int(intersections[i + 1]))
-                        for x in range(start_x, end_x + 1):
-                            try:
-                                if color_pair > 0:
-                                    stdscr.addch(y, x, color_char, curses.color_pair(color_pair))
-                                else:
-                                    stdscr.addch(y, x, color_char)
-                            except:
-                                pass
+            yc = y + 0.5
+            its = []
+            for y1, y2, sx, dx, sd, dd, sb, db in edges:
+                if y1 <= yc < y2:
+                    f = yc - y1
+                    its.append((sx + dx * f, sd + dd * f, sb + db * f))
+
+            if len(its) < 2:
+                continue
+            its.sort(key=lambda v: v[0])
+            x_start, d_start, b_start = its[0]
+            x_end, d_end, b_end = its[-1]
+            sx = int(math.ceil(x_start - 0.5))
+            ex = int(math.floor(x_end - 0.5))
+            if ex >= sx:
+                for x in range(sx, ex + 1):
+                    t = (x - sx) / (ex - sx) if ex != sx else 0
+                    d = d_start + (d_end - d_start) * t
+                    key = (x, y)
+                    if key in zbuf and zbuf[key][0] <= d:
+                        continue
+                    b = b_start + (b_end - b_start) * t
+                    rgb = ColorConverter.apply_brightness(base_rgb, b)
+                    ci = ColorConverter.rgb_to_256color(*rgb)
+                    if ci not in color_cache:
+                        pn = len(color_cache) + 1
+                        try:
+                            curses.init_pair(pn, ci, 0)
+                            color_cache[ci] = pn
+                        except:
+                            color_cache[ci] = 0
+                    zbuf[key] = (d, color_cache.get(ci, 0), color_char)
     
     def get_front_top_edge_piece(self):
         """找到当前正面(F)和上方向(U)的交线棱块"""
@@ -597,75 +646,59 @@ class RubiksCube:
                 pass
     
     def draw(self, stdscr, width, height, color_cache):
-        """绘制魔方"""
+        """绘制魔方：栅格化着色 → 文字输出"""
         stdscr.clear()
         self.update_animation()
-        
-        faces_to_draw = []
-        
+
+        # === 栅格化（面内1D抖动 + 深度测试） ===
+        zbuf = {}
         for piece in self.pieces:
             for face_name in FACE_NORMALS.keys():
                 color_idx = self.get_piece_face_color(piece, face_name)
                 if color_idx is None:
                     continue
-                
+
                 corners_3d = self.get_piece_face_corners(piece, face_name)
                 if len(corners_3d) < 3:
                     continue
-                
-                center = Vector3(0, 0, 0)
-                for corner in corners_3d:
-                    center = center + corner
-                center = center * (1.0 / len(corners_3d))
-                
-                rotated_center = self.rotation.rotate_vector(center)
-                world_center = rotated_center + self.position
-                
+
                 v1 = corners_3d[1] - corners_3d[0]
                 v2 = corners_3d[2] - corners_3d[0]
                 normal = v1.cross(v2).normalized()
                 normal_rotated = self.rotation.rotate_vector(normal)
-                
-                camera_to_face = world_center - self.camera_position
-                
-                if normal_rotated.dot(camera_to_face) >= 0:
-                    continue
-                
-                brightness = self.calculate_brightness(normal_rotated)
-                face_color_rgb = ColorConverter.apply_brightness(
-                    COLOR_RGB[color_idx], brightness)
 
-                color_index = ColorConverter.rgb_to_256color(*face_color_rgb)
-                
-                if color_index not in color_cache:
-                    pair_number = len(color_cache) + 1
-                    try:
-                        curses.init_pair(pair_number, color_index, 0)
-                        color_cache[color_index] = pair_number
-                    except:
-                        color_cache[color_index] = 0
-                
+                center = sum(corners_3d, Vector3(0, 0, 0)) * (1.0 / len(corners_3d))
+                world_center = self.rotation.rotate_vector(center) + self.position
+                if normal_rotated.dot(world_center - self.camera_position) >= 0:
+                    continue
+
+                corner_depths = []
+                corner_brightness = []
                 screen_points = []
-                for corner in corners_3d:
-                    x, y, _ = self.project_point(corner, width, height)
-                    screen_points.append((x, y))
-                
-                depth = camera_to_face.length
-                
-                # 获取颜色对应的汉字
-                color_char = COLOR_CHARS[color_idx]
-                
-                faces_to_draw.append({
-                    'points': screen_points,
-                    'color_pair': color_cache.get(color_index, 0),
-                    'depth': depth,
-                    'color_char': color_char  # 添加汉字字符
-                })
-        
-        faces_to_draw.sort(key=lambda f: f['depth'], reverse=True)
-        for face_data in faces_to_draw:
-            self.draw_polygon(stdscr, face_data['points'], face_data['color_pair'], face_data['color_char'])
-        
+                for c in corners_3d:
+                    c_world = self.rotation.rotate_vector(c) + self.position
+                    corner_depths.append((c_world - self.camera_position).length)
+                    vd = (self.camera_position - c_world).normalized()
+                    corner_brightness.append(self.calculate_brightness(normal_rotated, vd))
+                    sx, sy, _ = self.project_point(c, width, height)
+                    screen_points.append((sx, sy))
+
+                self._rasterize(zbuf, screen_points, color_idx,
+                                corner_brightness, corner_depths,
+                                color_cache, COLOR_CHARS[color_idx])
+
+        # === 文字输出（curses颜色对） ===
+        max_y, max_x = stdscr.getmaxyx()
+        for (x, y), (depth, pair, ch) in zbuf.items():
+            if 0 <= x < max_x and 0 <= y < max_y:
+                try:
+                    if pair > 0:
+                        stdscr.addch(y, x, ch, curses.color_pair(pair))
+                    else:
+                        stdscr.addch(y, x, ch)
+                except:
+                    pass
+
         self._draw_direction_marker(stdscr, width, height)
         self._draw_ui(stdscr, width, height)
     
